@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shyam Mistān Bhandār - The Taste of Tradition</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Use Inter font -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #fefcfb; /* Off-white, slightly warm background */
+        }
+        /* Custom Utility Classes for Animation */
+        .fade-in {
+            opacity: 0;
+            transform: translateY(20px);
+            transition: opacity 0.6s ease-out, transform 0.6s ease-out;
+        }
+        .fade-in.active {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        /* Modal Backdrop */
+        .modal-backdrop {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            backdrop-filter: blur(5px);
+        }
+        .modal-content {
+            background: white;
+            padding: 2rem;
+            border-radius: 1rem;
+            max-width: 90%;
+            width: 600px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+            max-height: 90vh;
+            overflow-y: auto;
+            position: relative;
+        }
+    </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'primary-gold': '#DAA520', /* Gold/Saffron */
+                        'secondary-maroon': '#8B0000', /* Dark Red/Maroon */
+                        'accent-orange': '#FF8C00', /* Dark Orange */
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="text-gray-800">
+
+    <!-- Firebase SDK Imports (Module Script) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- EXPLICIT FIREBASE CONFIGURATION ---
+        const explicitFirebaseConfig = {
+          apiKey: "AIzaSyAMlbdxA2CaOy-mKjLQPiBqTw3jRGV0nLk",
+          authDomain: "shyammistanbhandar-81dab.firebaseapp.com",
+          databaseURL: "https://shyammistanbhandar-81dab-default-rtdb.firebaseio.com",
+          projectId: "shyammistanbhandar-81dab",
+          storageBucket: "shyammistanbhandar-81dab.firebasestorage.app",
+          messagingSenderId: "854688177591",
+          appId: "1:854688177591:web:8dd415a96c12eebcb05c32",
+          measurementId: "G-FWXQMXF6J4"
+        };
+        const firebaseConfig = explicitFirebaseConfig; // Use the provided config directly
+        
+        // We use the projectId for the collection path as the primary identifier.
+        const appId = firebaseConfig.projectId; 
+        
+        // This token remains dynamic for canvas authentication purposes.
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        // --- END CONFIGURATION ---
+
+        // Firestore Collection paths
+        const HOVER_COLLECTION_PATH = `artifacts/${appId}/public/data/dish_hovers`;
+        const ORDER_COLLECTION_PATH = `artifacts/${appId}/public/data/orders`; // New collection for orders
+
+        let db = null;
+        let auth = null;
+        let userId = null;
+
+        // Function to initialize Firebase and authenticate
+        async function initFirebase() {
+            try {
+                if (Object.keys(firebaseConfig).length === 0) {
+                    console.error("Firebase configuration is missing. Services disabled.");
+                    document.getElementById('order-message').textContent = "Database service not available. Please try again later.";
+                    return;
+                }
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                setLogLevel('Debug'); // Enable Firestore logging
+
+                // Authenticate user
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                // Assign global variables to window scope for access by non-module script
+                window.db = db;
+                window.auth = auth;
+                window.userId = auth.currentUser?.uid || crypto.randomUUID();
+                userId = window.userId; // Also update module scope variable
+
+                console.log("Firebase initialized. User ID:", userId);
+
+                // --- FIX: Call setupDishHoverTracking after successful initialization ---
+                if (window.setupDishHoverTracking) {
+                    window.setupDishHoverTracking();
+                }
+
+            } catch (error) {
+                console.error("Error during Firebase initialization or authentication:", error);
+                document.getElementById('order-message').textContent = "Failed to connect to the database. Check console for details.";
+            }
+        }
+
+        // Function to handle the new Order Submission
+        window.handleOrderSubmission = async function(event) {
+            event.preventDefault();
+
+            if (!db) {
+                document.getElementById('order-message').textContent = "Database service is not ready.";
+                return;
+            }
+
+            // Get contact and location data
+            const location = document.getElementById('order-location').value;
+            const phone = document.getElementById('order-phone').value;
+            const notes = document.getElementById('order-notes').value;
+            const messageElement = document.getElementById('order-message');
+
+            // --- 1. Collect all valid dish items ---
+            const orderItems = [];
+            let hasValidItem = false;
+
+            // Loop through the 5 dish slots
+            for (let i = 1; i <= 5; i++) {
+                const dishNameEl = document.getElementById(`dish-name-${i}`);
+                const quantityEl = document.getElementById(`quantity-${i}`);
+                
+                const dishName = dishNameEl.value.trim();
+                const quantity = quantityEl.value.trim();
+                const quantityNum = parseInt(quantity, 10);
+
+                // Check if Dish Name is provided
+                if (dishName) {
+                    // Validate quantity
+                    if (isNaN(quantityNum) || quantityNum <= 0) {
+                        messageElement.textContent = `Quantity for Dish ${i} must be a positive number.`;
+                        messageElement.classList.remove('text-green-600', 'text-secondary-maroon');
+                        messageElement.classList.add('text-accent-orange');
+                        return;
+                    }
+                    orderItems.push({ dishName, quantity: quantityNum });
+                    hasValidItem = true;
+                }
+            }
+
+            // --- 2. Core Validation Checks ---
+            if (!hasValidItem) {
+                messageElement.textContent = "Please specify at least one dish and quantity.";
+                messageElement.classList.remove('text-green-600', 'text-secondary-maroon');
+                messageElement.classList.add('text-accent-orange');
+                return;
+            }
+            if (!location || !phone) {
+                messageElement.textContent = "Please fill in your Delivery Location and Phone Number.";
+                messageElement.classList.remove('text-green-600', 'text-secondary-maroon');
+                messageElement.classList.add('text-accent-orange');
+                return;
+            }
+            
+            // Set loading message
+            messageElement.textContent = "Placing your order...";
+            messageElement.classList.remove('text-green-600', 'text-accent-orange', 'text-secondary-maroon');
+            messageElement.classList.add('text-primary-gold');
+
+            try {
+                // Add document to the 'orders' collection
+                await addDoc(collection(db, ORDER_COLLECTION_PATH), {
+                    items: orderItems, // Array of ordered items
+                    location,
+                    phone,
+                    notes,
+                    totalItems: orderItems.length,
+                    status: 'New Order',
+                    submittedAt: new Date().toISOString(),
+                    userId: userId, // Record the submitting user ID
+                });
+
+                messageElement.textContent = `Order placed successfully! We received ${orderItems.length} items and will contact you at ${phone}.`;
+                messageElement.classList.remove('text-primary-gold', 'text-accent-orange', 'text-secondary-maroon');
+                messageElement.classList.add('text-green-600');
+                document.getElementById('orderForm').reset();
+
+            } catch (e) {
+                console.error("Error adding document: ", e);
+                messageElement.textContent = "Error placing order. Please try again or call us directly. (Check Firestore rules!)";
+                messageElement.classList.remove('text-primary-gold', 'text-green-600', 'text-accent-orange');
+                messageElement.classList.add('text-secondary-maroon');
+            }
+        }
+
+
+        // Initialize Firebase on window load
+        window.addEventListener('load', initFirebase);
+    </script>
+    <script>
+        // --- Core Gemini API Utility Functions ---
+        const apiKey = "";
+        const GEMINI_FLASH = "gemini-2.5-flash-preview-09-2025";
+        const GEMINI_TTS = "gemini-2.5-flash-preview-tts";
+        
+        // This collection path is defined in the module script and copied here for clarity/safety.
+        const HOVER_COLLECTION_PATH = "artifacts/shyammistanbhandar-81dab/public/data/dish_hovers"; // Hardcoded for consistency
+
+        // Tracking object to prevent duplicate writes for the same dish hover in one session
+        const hoveredDishes = {};
+
+        // Exponential backoff retry mechanism
+        async function retryWithExponentialBackoff(fetcher, maxRetries = 5) {
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    return await fetcher();
+                } catch (error) {
+                    if (i === maxRetries - 1) throw error;
+                    const delay = Math.pow(2, i) * 1000 + Math.random() * 1000;
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
+        }
+        
+        // Utility function for debouncing (delaying) repeated function calls
+        function debounce(func, delay) {
+            let timeout;
+            return function(...args) {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => func.apply(this, args), delay);
+            };
+        }
+
+        // --- Dish Hover Tracking (Lead Generation) ---
+        window.recordDishHover = async function(dishName) {
+            // Use window.db and window.userId set by the module script
+            if (!window.db || !window.userId) {
+                console.warn("Database or User ID not ready for hover tracking.");
+                return;
+            }
+
+            const key = `${window.userId}_${dishName}`;
+            if (hoveredDishes[key]) {
+                return;
+            }
+
+            try {
+                // Dynamic import needed since this is a non-module script
+                const { collection, addDoc } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js");
+                
+                await addDoc(collection(window.db, HOVER_COLLECTION_PATH), {
+                    dishName: dishName,
+                    userId: window.userId,
+                    timestamp: new Date().toISOString(),
+                    contactStatus: 'New Lead', 
+                });
+                
+                hoveredDishes[key] = true; // Mark as recorded
+                console.log(`[Lead] Dish hover recorded: ${dishName}`);
+
+            } catch (e) {
+                console.error("Error recording dish hover:", e);
+            }
+        }
+        // Debounce the recording function to wait 1 second after mouse stops moving
+        const debouncedRecordDishHover = debounce(window.recordDishHover, 1000);
+
+        // FIX: The setup function now needs to be available globally so the module script can call it
+        window.setupDishHoverTracking = function() {
+            const dishCards = document.querySelectorAll('[data-name]');
+            dishCards.forEach(card => {
+                card.addEventListener('mouseover', function() {
+                    const dishName = this.getAttribute('data-name');
+                    debouncedRecordDishHover(dishName);
+                });
+            });
+            console.log("Dish Hover Tracking successfully initialized and attached.");
+        }
+        // --- End Dish Hover Tracking ---
+
+
+        // Converts a Base64 string to an ArrayBuffer
+        function base64ToArrayBuffer(base64) {
+            const binaryString = atob(base64);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes.buffer;
+        }
+
+        // Converts PCM 16-bit data to a WAV Blob
+        function pcmToWav(pcm16, sampleRate = 24000) {
+            const numChannels = 1;
+            const bytesPerSample = 2;
+            const blockAlign = numChannels * bytesPerSample;
+            const byteRate = sampleRate * blockAlign;
+            const buffer = new ArrayBuffer(44 + pcm16.byteLength);
+            const view = new DataView(buffer);
+
+            /* RIFF identifier */
+            view.setUint32(0, 0x52494646, false); // "RIFF"
+            /* file length */
+            view.setUint32(4, 36 + pcm16.byteLength, true);
+            /* RIFF type */
+            view.setUint32(8, 0x57415645, false); // "WAVE"
+            /* format chunk identifier */
+            view.setUint32(12, 0x666d7420, false); // "fmt "
+            /* format chunk length */
+            view.setUint32(16, 16, true);
+            /* sample format (1 for PCM) */
+            view.setUint16(20, 1, true);
+            /* channel count */
+            view.setUint16(22, numChannels, true);
+            /* sample rate */
+            view.setUint32(24, sampleRate, true);
+            /* byte rate (sample rate * block align) */
+            view.setUint32(28, byteRate, true);
+            /* block align (channels * bytes per sample) */
+            view.setUint16(32, blockAlign, true);
+            /* bits per sample */
+            view.setUint16(34, 16, true);
+            /* data chunk identifier */
+            view.setUint32(36, 0x64617461, false); // "data"
+            /* data chunk length */
+            view.setUint32(40, pcm16.byteLength, true);
+
+            // Write PCM data
+            let offset = 44;
+            for (let i = 0; i < pcm16.length; i++, offset += 2) {
+                view.setInt16(offset, pcm16[i], true);
+            }
+
+            return new Blob([buffer], { type: 'audio/wav' });
+        }
+        
+        // --- Feature 1: Dish Deep Dive (Grounded Text) ---
+
+        window.fetchGeminiGroundedResponse = async function(dishName, dishCategory) {
+            const modal = document.getElementById('deepDiveModal');
+            const titleEl = document.getElementById('deepDiveTitle');
+            const contentEl = document.getElementById('deepDiveContent');
+            const loaderEl = document.getElementById('deepDiveLoader');
+            
+            titleEl.textContent = dishName;
+            contentEl.innerHTML = '';
+            loaderEl.classList.remove('hidden');
+            modal.style.display = 'flex'; // Show modal
+
+            const userQuery = `Find the history, key ingredients, and cultural significance of the Indian dish "${dishName}" (${dishCategory}). Provide a concise, engaging summary.`;
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_FLASH}:generateContent?key=${apiKey}`;
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                tools: [{ "google_search": {} }],
+                systemInstruction: {
+                    parts: [{ text: "You are a culinary historian for a famous sweet shop. Summarize the history and ingredients of the dish accurately, citing all sources. The tone must be warm, knowledgeable, and inviting." }]
+                },
+            };
+
+            try {
+                const fetcher = async () => {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    if (!response.ok) throw new Error(`API error: ${response.statusText}`);
+                    return response.json();
+                };
+
+                const result = await retryWithExponentialBackoff(fetcher);
+                const candidate = result.candidates?.[0];
+                loaderEl.classList.add('hidden');
+
+                if (candidate && candidate.content?.parts?.[0]?.text) {
+                    let text = candidate.content.parts[0].text;
+                    let sources = [];
+
+                    const groundingMetadata = candidate.groundingMetadata;
+                    if (groundingMetadata && groundingMetadata.groundingAttributions) {
+                        sources = groundingMetadata.groundingAttributions
+                            .map(attr => ({
+                                uri: attr.web?.uri,
+                                title: attr.web?.title,
+                            }))
+                            .filter(source => source.uri && source.title);
+                    }
+
+                    // Format content
+                    let formattedHtml = `<p class="mb-4">${text.replace(/\n\n/g, '</p><p class="mb-4">')}</p>`;
+                    
+                    if (sources.length > 0) {
+                        formattedHtml += '<h4 class="text-lg font-bold mt-6 mb-2 text-secondary-maroon">Sources of Culinary Knowledge:</h4>';
+                        formattedHtml += '<ul class="list-disc list-inside space-y-1 text-sm text-gray-600">';
+                        sources.forEach((source, index) => {
+                            formattedHtml += `<li><a href="${source.uri}" target="_blank" class="text-accent-orange hover:underline">${source.title || 'Source ' + (index + 1)}</a></li>`;
+                        });
+                        formattedHtml += '</ul>';
+                    } else {
+                        formattedHtml += '<p class="mt-4 text-sm text-gray-500">No external sources were needed to craft this delicious history!</p>';
+                    }
+
+                    contentEl.innerHTML = formattedHtml;
+
+                } else {
+                    contentEl.textContent = "Sorry, I couldn't generate detailed information for this dish right now.";
+                }
+
+            } catch (error) {
+                console.error("Gemini API call failed:", error);
+                loaderEl.classList.add('hidden');
+                contentEl.textContent = "A network error occurred while fetching information. Please check your connection.";
+            }
+        }
+
+        window.closeDeepDiveModal = function() {
+            document.getElementById('deepDiveModal').style.display = 'none';
+        }
+
+        // --- Feature 2: Culinary Assistant (TTS) ---
+        window.fetchGeminiAudioResponse = async function() {
+            const prompt = document.getElementById('tts-prompt').value.trim();
+            const messageEl = document.getElementById('tts-message');
+            const audioEl = document.getElementById('tts-audio-player');
+            
+            if (!prompt) {
+                messageEl.textContent = "Please enter your cooking question.";
+                messageEl.classList.remove('text-primary-gold', 'text-green-600', 'text-secondary-maroon');
+                messageEl.classList.add('text-accent-orange');
+                return;
+            }
+
+            audioEl.classList.add('hidden');
+            audioEl.src = ''; // Clear previous audio
+            messageEl.textContent = "Our Culinary Assistant is preparing the audio response... (This may take a moment)";
+            messageEl.classList.remove('text-accent-orange', 'text-green-600', 'text-secondary-maroon');
+            messageEl.classList.add('text-primary-gold');
+
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_TTS}:generateContent?key=${apiKey}`;
+            
+            const systemPrompt = "You are a friendly, experienced head chef and culinary expert. Provide a concise, helpful, and general answer to the user's cooking or food-related question. The tone should be helpful and encouraging.";
+
+            const payload = {
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: {
+                    responseModalities: ["AUDIO"],
+                    speechConfig: {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: { voiceName: "Rasalgethi" } // Using Rasalgethi voice (Informative/Mature)
+                        }
+                    }
+                },
+                systemInstruction: {
+                    parts: [{ text: systemPrompt }]
+                },
+            };
+
+            try {
+                const fetcher = async () => {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    if (!response.ok) throw new Error(`API error: ${response.statusText}`);
+                    return response.json();
+                };
+
+                const result = await retryWithExponentialBackoff(fetcher);
+                const part = result?.candidates?.[0]?.content?.parts?.[0];
+                const audioData = part?.inlineData?.data;
+                const mimeType = part?.inlineData?.mimeType;
+
+                if (audioData && mimeType && mimeType.startsWith("audio/L16")) {
+                    const sampleRateMatch = mimeType.match(/rate=(\d+)/);
+                    const sampleRate = sampleRateMatch ? parseInt(sampleRateMatch[1], 10) : 24000;
+                    
+                    const pcmData = base64ToArrayBuffer(audioData);
+                    const pcm16 = new Int16Array(pcmData);
+                    const wavBlob = pcmToWav(pcm16, sampleRate);
+                    const audioUrl = URL.createObjectURL(wavBlob);
+                    
+                    audioEl.src = audioUrl;
+                    audioEl.classList.remove('hidden');
+                    messageEl.textContent = "Audio response ready! Press play to hear the chef's tip.";
+                    messageEl.classList.remove('text-primary-gold', 'text-accent-orange', 'text-secondary-maroon');
+                    messageEl.classList.add('text-green-600');
+                } else {
+                    messageEl.textContent = "Error: Failed to generate audio. The model might not have understood the query.";
+                    messageEl.classList.remove('text-primary-gold', 'text-green-600', 'text-accent-orange');
+                    messageEl.classList.add('text-secondary-maroon');
+                }
+
+            } catch (error) {
+                console.error("Gemini TTS API call failed:", error);
+                messageEl.textContent = "A network error occurred while attempting to generate the audio.";
+                messageEl.classList.remove('text-primary-gold', 'text-green-600', 'text-accent-orange');
+                messageEl.classList.add('text-secondary-maroon');
+            }
+        }
+
+
+        // --- Existing Website Functions ---
+        const menuData = [
+            // Added prices in Rupees (₹)
+            { name: "Jalebi Rabri", category: "Classic Sweets", description: "Crispy fried sweet dipped in syrup, served with rich, creamy Rabri.", image: "https://placehold.co/200x200/FF7F50/FFFFFF?text=Jalebi+Rabri", price: 60.00 },
+            { name: "Raj Kachori", category: "Chaat Specials", description: "A large, crispy shell filled with lentils, potatoes, yogurt, and chutneys.", image: "https://placehold.co/200x200/FFA500/000000?text=Raj+Kachori", price: 120.00 },
+            { name: "Gulab Jamun (2 pcs)", category: "Warm Desserts", description: "Soft, spongy milk solids balls soaked in rose-flavored sugar syrup.", image: "https://placehold.co/200x200/A52A2A/FFFFFF?text=Gulab+Jamun", price: 50.00 },
+            { name: "Pani Puri (6 pcs)", category: "Street Food", description: "Hollow, crispy balls filled with spicy mashed potato and flavored water.", image: "https://placehold.co/200x200/008080/FFFFFF?text=Pani+Puri", price: 40.00 },
+            { name: "Samosa Chaat", category: "Savory Snacks", description: "Crushed Samosas topped with chickpeas, yogurt, and tangy tamarind chutney.", image: "https://placehold.co/200x200/D2B48C/000000?text=Samosa+Chaat", price: 80.00 },
+            { name: "Rasmālai", category: "Deluxe Sweets", description: "Soft paneer discs soaked in chilled, sweetened, flavored milk.", image: "https://placehold.co/200x200/F0E68C/000000?text=Rasmalai", price: 75.00 },
+            { name: "Peda (100g)", category: "Milk Delicacy", description: "Thick, semi-soft sweet fudge made from khoya, milk, and sugar.", image: "https://placehold.co/200x200/996633/FFFFFF?text=Peda", price: 150.00 },
+        ];
+
+        let currentSlide = 0;
+        const totalSlides = menuData.length;
+
+        // Function to create dish cards (Now includes price display)
+        function createDishCard(dish, isLarge = false) {
+            // Note: data-name attribute is crucial for hover tracking
+            return `
+                <div class="p-6 bg-white rounded-xl shadow-lg hover:shadow-2xl transition duration-500 transform hover:-translate-y-1 border-t-4 border-primary-gold ${isLarge ? 'md:w-1/5 w-11/12' : 'w-full'}" data-name="${dish.name}">
+                    <img src="${dish.image}" alt="${dish.name}" class="h-20 w-20 mx-auto mb-4 rounded-full object-cover border-4 border-accent-orange">
+                    <h3 class="text-xl font-bold text-gray-900 mb-2">${dish.name}</h3>
+                    <p class="text-sm text-gray-600 mb-2">${dish.description}</p>
+                    <p class="text-lg font-extrabold text-secondary-maroon mb-4">Price: ₹${dish.price.toFixed(2)}</p>
+                    <button onclick="fetchGeminiGroundedResponse('${dish.name}', '${dish.category}')" class="w-full bg-accent-orange text-white text-sm py-2 rounded-full font-semibold hover:bg-yellow-600 transition duration-300 transform hover:scale-[1.03]">
+                        Dish Deep Dive ✨
+                    </button>
+                </div>
+            `;
+        }
+
+        function renderDishCarousel() {
+            const carouselInner = document.getElementById('carousel-inner');
+            if (!carouselInner) return;
+
+            const slidesHtml = menuData.map(dish => `
+                <div class="min-w-full flex-shrink-0 p-4">
+                    <div class="bg-white rounded-xl shadow-2xl p-8 border-l-4 border-secondary-maroon text-center transform transition duration-700 ease-in-out" data-name="${dish.name}">
+                        <img src="${dish.image}" alt="${dish.name}" class="h-24 w-24 mx-auto mb-4 rounded-full object-cover shadow-md border-4 border-primary-gold">
+                        <h3 class="text-3xl font-extrabold text-secondary-maroon mb-2">${dish.name}</h3>
+                        <p class="text-lg font-semibold text-gray-700">${dish.category}</p>
+                        <p class="mt-4 text-gray-600 max-w-lg mx-auto">${dish.description}</p>
+                        <p class="text-2xl font-extrabold text-accent-orange mb-4">Price: ₹${dish.price.toFixed(2)}</p>
+                        <button onclick="fetchGeminiGroundedResponse('${dish.name}', '${dish.category}')" class="mt-4 bg-primary-gold text-white text-sm py-2 px-6 rounded-full font-semibold hover:bg-secondary-maroon transition duration-300 transform hover:scale-105">
+                            Dish Deep Dive ✨
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+
+            carouselInner.innerHTML = slidesHtml;
+        }
+
+        function setupDishCarousel() {
+            renderDishCarousel();
+            const carouselInner = document.getElementById('carousel-inner');
+
+            function nextSlide() {
+                currentSlide = (currentSlide + 1) % totalSlides;
+                updateCarousel();
+            }
+
+            function updateCarousel() {
+                const offset = -currentSlide * 100; // 100% per slide
+                carouselInner.style.transform = `translateX(${offset}%)`;
+            }
+
+            carouselInner.style.transition = 'transform 0.7s ease-in-out';
+            setInterval(nextSlide, 4000); // Slide every 4 seconds
+        }
+
+        function setupScrollAnimations() {
+            const observer = new IntersectionObserver((entries, observer) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        entry.target.classList.add('active');
+                    }
+                });
+            }, {
+                rootMargin: '0px',
+                threshold: 0.1
+            });
+
+            document.querySelectorAll('.fade-in').forEach(element => {
+                observer.observe(element);
+            });
+        }
+
+        window.onload = function() {
+            // Render home dishes
+            const homeDishesContainer = document.getElementById('home-dishes');
+            if(homeDishesContainer) {
+                const homeDishes = menuData.slice(0, 5); // Take first 5 for Home section
+                homeDishesContainer.innerHTML = homeDishes.map(d => createDishCard(d, true)).join('');
+            }
+
+            setupDishCarousel();
+            setupScrollAnimations();
+            // Note: setupDishHoverTracking is now called from initFirebase
+        };
+
+    </script>
+
+    <!-- Navigation Bar -->
+    <header class="sticky top-0 z-50 bg-white shadow-lg">
+        <nav class="max-w-7xl mx-auto px-6 py-4 flex justify-between items-center">
+            <h1 class="text-3xl font-extrabold text-secondary-maroon tracking-tighter transition duration-500 hover:text-primary-gold cursor-pointer">
+                Shyam Mistān <span class="text-primary-gold">Bhandār</span>
+            </h1>
+            <div class="flex space-x-6">
+                <!-- Updated Navigation Links -->
+                <a href="#products" class="nav-link text-gray-700 hover:text-secondary-maroon font-semibold transition duration-300 transform hover:scale-105">Products</a>
+                <a href="#about" class="nav-link text-gray-700 hover:text-secondary-maroon font-semibold transition duration-300 transform hover:scale-105">About</a>
+                <a href="#order" class="nav-link text-white bg-accent-orange py-1 px-4 rounded-full hover:bg-secondary-maroon transition duration-300 shadow-md hover:shadow-xl">Place Order</a>
+                <a href="#contact" class="nav-link text-gray-700 hover:text-secondary-maroon font-semibold transition duration-300 transform hover:scale-105">Contact</a>
+            </div>
+        </nav>
+    </header>
+
+    <main>
+        <!-- Home/Products Section (Combined Section 1) -->
+        <section id="products" class="min-h-screen pt-20 flex flex-col items-center justify-center text-center px-4 md:px-8 bg-gray-50">
+            <div class="fade-in max-w-4xl mx-auto mb-16">
+                <p class="text-xl font-medium text-accent-orange mb-3 tracking-widest uppercase">The Authentic Taste of Tradition</p>
+                <h2 class="text-5xl md:text-6xl font-extrabold text-gray-900 mb-6 leading-tight">
+                    Our Delicious <span class="text-secondary-maroon">Products & Menu</span>
+                </h2>
+                <p class="text-lg text-gray-600 mb-8 max-w-3xl mx-auto">
+                    Every dish is prepared with premium ingredients and traditional recipes. Browse our favorites below, or view the full, sliding menu.
+                </p>
+                <a href="#order" class="inline-block bg-primary-gold text-white font-bold py-3 px-8 rounded-full text-lg shadow-xl hover:bg-secondary-maroon transition duration-500 transform hover:scale-105">
+                    Order Now!
+                </a>
+            </div>
+
+            <!-- Products Showcase -->
+            <div class="fade-in delay-200 w-full max-w-7xl">
+                <h3 class="text-3xl font-bold text-gray-900 mb-8">Signature Dishes & Prices</h3>
+                <div id="home-dishes" class="flex flex-wrap justify-center gap-6">
+                    <!-- Dish cards will be inserted here by JavaScript -->
+                </div>
+            </div>
+        </section>
+
+        <!-- Products Section (Sliding Carousel, Part of Section 1) -->
+        <section id="menu" class="py-20 bg-white">
+            <div class="max-w-7xl mx-auto px-4 md:px-8 text-center">
+                <div class="fade-in mb-12">
+                    <h2 class="text-5xl font-extrabold text-gray-900 mb-4">Explore Our Full Menu (Sliding)</h2>
+                    <p class="text-xl text-gray-600">See all our Chaats, Savories, and Traditional Indian Sweets in motion.</p>
+                </div>
+
+                <div class="fade-in delay-300 relative overflow-hidden rounded-3xl shadow-2xl bg-gray-50 border border-gray-200">
+                    <!-- Carousel Container -->
+                    <div id="carousel-inner" class="flex transition-transform duration-700 ease-in-out" style="width: 100%;">
+                        <!-- Dish slides will be inserted here by JavaScript -->
+                    </div>
+                </div>
+            </div>
+        </section>
+
+
+        <!-- About Section (Section 2) -->
+        <section id="about" class="py-20 bg-secondary-maroon">
+            <div class="max-w-7xl mx-auto px-4 md:px-8 text-center text-white">
+                <div class="fade-in max-w-4xl mx-auto">
+                    <h2 class="text-5xl font-extrabold mb-6">About Shyam Mistān Bhandār</h2>
+                    <p class="text-lg mb-8">
+                        More than just a sweet shop, Shyam Mistān Bhandār is a legacy. Founded by [Founder's Name] with a passion for authentic flavors, our establishment has grown into a beloved culinary landmark. Our commitment is simple: **uncompromised quality and authentic taste.**
+                    </p>
+                    <div class="text-left space-y-4">
+                        <p class="text-base flex items-start">
+                            <svg class="w-6 h-6 mr-3 mt-1 text-primary-gold flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>
+                            **Pure Ingredients:** We use only premium quality milk, pure desi ghee, and the finest spices, ensuring a superior flavor profile in every dish.
+                        </p>
+                        <p class="text-base flex items-start">
+                            <svg class="w-6 h-6 mr-3 mt-1 text-primary-gold flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>
+                            **Handcrafted Tradition:** Our sweets are handcrafted daily by master mithai-walas using age-old techniques passed down through our family.
+                        </p>
+                        <p class="text-base flex items-start">
+                            <svg class="w-6 h-6 mr-3 mt-1 text-primary-gold flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>
+                            **Serving Community:** We are dedicated to maintaining the trust and happiness of our customers, serving joy with every plate and box.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Order Section (Section 3) -->
+        <section id="order" class="py-20 bg-gray-50">
+            <div class="max-w-3xl mx-auto px-4 md:px-8">
+                <div class="fade-in text-center mb-10">
+                    <h2 class="text-4xl font-extrabold text-gray-900 mb-4">Place Your Order</h2>
+                    <p class="text-lg text-gray-600">Fill out this form to quickly place an order for delivery or pickup.</p>
+                </div>
+
+                <div class="fade-in delay-100 bg-white p-8 rounded-xl shadow-2xl border-t-8 border-primary-gold">
+                    <form id="orderForm" onsubmit="window.handleOrderSubmission(event)">
+                        
+                        <!-- NEW MULTI-DISH INPUT SLOTS -->
+                        <h4 class="text-xl font-bold text-secondary-maroon mb-4 border-b pb-2">Select Your Dishes (Up to 5)</h4>
+                        <div id="dish-order-slots" class="space-y-4 mb-6">
+                            <!-- Dish Slot 1 (REQUIRED) -->
+                            <div class="grid grid-cols-3 gap-4 border-b border-gray-100 pb-4">
+                                <div class="col-span-2">
+                                    <label for="dish-name-1" class="block text-xs font-medium text-gray-700 mb-1">Dish Name 1 (Required)</label>
+                                    <input type="text" id="dish-name-1" placeholder="e.g., Jalebi Rabri" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-gold focus:border-primary-gold" required>
+                                </div>
+                                <div>
+                                    <label for="quantity-1" class="block text-xs font-medium text-gray-700 mb-1">Qty</label>
+                                    <input type="number" id="quantity-1" value="1" min="1" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-gold focus:border-primary-gold" required>
+                                </div>
+                            </div>
+                            <!-- Dish Slot 2 (Optional) -->
+                            <div class="grid grid-cols-3 gap-4 border-b border-gray-100 pb-4">
+                                <div class="col-span-2">
+                                    <label for="dish-name-2" class="block text-xs font-medium text-gray-700 mb-1">Dish Name 2 (Optional)</label>
+                                    <input type="text" id="dish-name-2" placeholder="e.g., Raj Kachori" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-gold focus:border-primary-gold">
+                                </div>
+                                <div>
+                                    <label for="quantity-2" class="block text-xs font-medium text-gray-700 mb-1">Qty</label>
+                                    <input type="number" id="quantity-2" value="" min="1" placeholder="0" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-gold focus:border-primary-gold">
+                                </div>
+                            </div>
+                            <!-- Dish Slot 3 (Optional) -->
+                            <div class="grid grid-cols-3 gap-4 border-b border-gray-100 pb-4">
+                                <div class="col-span-2">
+                                    <label for="dish-name-3" class="block text-xs font-medium text-gray-700 mb-1">Dish Name 3 (Optional)</label>
+                                    <input type="text" id="dish-name-3" placeholder="e.g., Gulab Jamun" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-gold focus:border-primary-gold">
+                                </div>
+                                <div>
+                                    <label for="quantity-3" class="block text-xs font-medium text-gray-700 mb-1">Qty</label>
+                                    <input type="number" id="quantity-3" value="" min="1" placeholder="0" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-gold focus:border-primary-gold">
+                                </div>
+                            </div>
+                            <!-- Dish Slot 4 (Optional) -->
+                            <div class="grid grid-cols-3 gap-4 border-b border-gray-100 pb-4">
+                                <div class="col-span-2">
+                                    <label for="dish-name-4" class="block text-xs font-medium text-gray-700 mb-1">Dish Name 4 (Optional)</label>
+                                    <input type="text" id="dish-name-4" placeholder="e.g., Samosa Chaat" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-gold focus:border-primary-gold">
+                                </div>
+                                <div>
+                                    <label for="quantity-4" class="block text-xs font-medium text-gray-700 mb-1">Qty</label>
+                                    <input type="number" id="quantity-4" value="" min="1" placeholder="0" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-gold focus:border-primary-gold">
+                                </div>
+                            </div>
+                            <!-- Dish Slot 5 (Optional) -->
+                            <div class="grid grid-cols-3 gap-4">
+                                <div class="col-span-2">
+                                    <label for="dish-name-5" class="block text-xs font-medium text-gray-700 mb-1">Dish Name 5 (Optional)</label>
+                                    <input type="text" id="dish-name-5" placeholder="e.g., Rasmālai" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-gold focus:border-primary-gold">
+                                </div>
+                                <div>
+                                    <label for="quantity-5" class="block text-xs font-medium text-gray-700 mb-1">Qty</label>
+                                    <input type="number" id="quantity-5" value="" min="1" placeholder="0" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-gold focus:border-primary-gold">
+                                </div>
+                            </div>
+                        </div>
+                        <!-- END NEW MULTI-DISH INPUT SLOTS -->
+
+                        <div class="mb-5">
+                            <label for="order-location" class="block text-sm font-medium text-gray-700 mb-2">Delivery Location / Address</label>
+                            <textarea id="order-location" rows="2" placeholder="Your full address or nearest landmark" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-gold focus:border-primary-gold transition duration-300" required></textarea>
+                        </div>
+                        <div class="mb-6">
+                            <label for="order-phone" class="block text-sm font-medium text-gray-700 mb-2">Your Phone Number</label>
+                            <input type="tel" id="order-phone" placeholder="e.g., 9876543210" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-gold focus:border-primary-gold transition duration-300" required>
+                        </div>
+                        <div class="mb-6">
+                            <label for="order-notes" class="block text-sm font-medium text-gray-700 mb-2">Other Information (e.g., special instructions)</label>
+                            <textarea id="order-notes" rows="2" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-gold focus:border-primary-gold transition duration-300"></textarea>
+                        </div>
+
+                        <button type="submit" class="w-full bg-secondary-maroon text-white font-bold py-3 rounded-xl shadow-lg hover:bg-primary-gold transition duration-500 transform hover:scale-[1.01]">
+                            Confirm Order
+                        </button>
+                    </form>
+
+                    <p id="order-message" class="mt-4 text-sm font-medium text-center text-gray-500"></p>
+                </div>
+            </div>
+        </section>
+        
+        <!-- Contact Section (Section 4) -->
+        <section id="contact" class="py-20 bg-white">
+            <div class="max-w-3xl mx-auto px-4 md:px-8">
+
+                <!-- 1. Contact Information -->
+                <div class="fade-in text-center mb-12">
+                    <h2 class="text-4xl font-extrabold text-gray-900 mb-4">Contact Us</h2>
+                    <p class="text-lg text-gray-600">Get in touch with our team for bulk orders, feedback, or general inquiries.</p>
+                </div>
+
+                <div class="fade-in delay-100 bg-gray-50 p-8 rounded-xl shadow-2xl border-t-8 border-accent-orange flex flex-col md:flex-row justify-around space-y-6 md:space-y-0">
+                    <div class="text-center">
+                        <p class="text-xl font-bold text-secondary-maroon mb-2">Retail Orders & Takeaway</p>
+                        <a href="tel:+919876543210" class="text-2xl font-extrabold text-primary-gold hover:text-accent-orange transition duration-300">+91 98765 43210</a>
+                    </div>
+                    <div class="text-center">
+                        <p class="text-xl font-bold text-secondary-maroon mb-2">Catering & Bulk Inquiries</p>
+                        <a href="tel:+919876543211" class="text-2xl font-extrabold text-primary-gold hover:text-accent-orange transition duration-300">+91 98765 43211</a>
+                    </div>
+                </div>
+                
+                <!-- 2. Culinary Assistant (TTS) - Moved here from original "Queries" section -->
+                <div class="fade-in text-center mt-12 mb-8">
+                    <h3 class="text-3xl font-extrabold text-gray-900 mb-4">Chef's Audio Assistant 🎧</h3>
+                    <p class="text-base text-gray-600">Need a quick culinary tip? Ask our expert chef a question and get an instant, spoken reply.</p>
+                </div>
+                <div id="tts-assistant" class="fade-in delay-200 bg-white p-8 rounded-xl shadow-2xl border-t-4 border-primary-gold">
+                    <div class="mb-5">
+                        <label for="tts-prompt" class="block text-sm font-medium text-gray-700 mb-2">Your Culinary Question</label>
+                        <input type="text" id="tts-prompt" placeholder="e.g., How do you make Jalebi crispy?" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-accent-orange focus:border-accent-orange transition duration-300">
+                    </div>
+
+                    <button onclick="fetchGeminiAudioResponse()" class="w-full bg-accent-orange text-white font-bold py-3 rounded-xl shadow-lg hover:bg-secondary-maroon transition duration-500 transform hover:scale-[1.01]">
+                        Speak Answer 🎧
+                    </button>
+
+                    <p id="tts-message" class="mt-4 text-sm font-medium text-center text-gray-500"></p>
+                    
+                    <audio id="tts-audio-player" controls class="mt-4 w-full hidden mx-auto"></audio>
+                </div>
+            </div>
+        </section>
+        
+    </main>
+
+    <footer class="bg-gray-800 text-white py-8">
+        <div class="max-w-7xl mx-auto text-center">
+            <p>&copy; 2025 Shyam Mistān Bhandār. All rights reserved. The Taste of Tradition.</p>
+            <p class="text-sm mt-2 text-gray-400">Handcrafted with love and pure ingredients.</p>
+        </div>
+    </footer>
+
+    <!-- Deep Dive Modal Structure -->
+    <div id="deepDiveModal" class="modal-backdrop">
+        <div class="modal-content">
+            <h3 id="deepDiveTitle" class="text-3xl font-extrabold text-secondary-maroon mb-4"></h3>
+            <div id="deepDiveLoader" class="flex items-center justify-center py-6">
+                <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-gold"></div>
+                <span class="ml-3 text-gray-600">Gathering history and ingredients...</span>
+            </div>
+            <div id="deepDiveContent" class="text-gray-700 text-base leading-relaxed">
+                <!-- Content will be injected here -->
+            </div>
+            <button onclick="closeDeepDiveModal()" class="absolute top-4 right-4 text-gray-400 hover:text-gray-900 transition duration-300">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+        </div>
+    </div>
+
+</body>
+</html>
